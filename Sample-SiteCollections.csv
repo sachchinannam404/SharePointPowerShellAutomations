@@ -1,0 +1,11 @@
+SiteTitle,SiteUrl,IsHub,HubAssociation,Owner,Description
+Marketing Hub,https://contoso.sharepoint.com/sites/marketing-hub,true,,marketing@contoso.com,Central hub for all marketing initiatives and campaigns
+US Marketing,https://contoso.sharepoint.com/sites/us-marketing,false,https://contoso.sharepoint.com/sites/marketing-hub,marketing@contoso.com,US Region Marketing Team and resources
+EMEA Marketing,https://contoso.sharepoint.com/sites/emea-marketing,false,https://contoso.sharepoint.com/sites/marketing-hub,marketing@contoso.com,Europe Middle East and Africa Marketing Team
+Sales Hub,https://contoso.sharepoint.com/sites/sales-hub,true,,sales@contoso.com,Main sales hub for all sales teams and resources
+Enterprise Sales,https://contoso.sharepoint.com/sites/enterprise-sales,false,https://contoso.sharepoint.com/sites/sales-hub,sales@contoso.com,Enterprise accounts and sales strategy
+SMB Sales,https://contoso.sharepoint.com/sites/smb-sales,false,https://contoso.sharepoint.com/sites/sales-hub,sales@contoso.com,Small and Medium Business sales team
+HR Hub,https://contoso.sharepoint.com/sites/hr-hub,true,,hr@contoso.com,Central hub for Human Resources and employee resources
+Recruitment,https://contoso.sharepoint.com/sites/recruitment,false,https://contoso.sharepoint.com/sites/hr-hub,hr@contoso.com,Recruitment and hiring management
+Benefits and Payroll,https://contoso.sharepoint.com/sites/benefits-payroll,false,https://contoso.sharepoint.com/sites/hr-hub,hr@contoso.com,Employee benefits and payroll information
+Employee Development,https://contoso.sharepoint.com/sites/employee-development,false,https://contoso.sharepoint.com/sites/hr-hub,hr@contoso.com,Training and development programs
