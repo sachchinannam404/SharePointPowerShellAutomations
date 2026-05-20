@@ -1,0 +1,8 @@
+SiteUrl,SiteTitle,SiteTemplate,Owner,Status,Lists,DocumentLibraries,ImageLibraries,AssetLibraries,FormLibraries,WikiPageLibraries,SitePages,Webs,Users,Groups,TotalItems,StorageUsedMB,LastModified,Error
+https://contoso.sharepoint.com/sites/marketing,Marketing Hub,STS,marketing@contoso.com,Active,5,3,1,0,0,0,12,2,15,8,250,1024.50,2026-05-20 14:30:00,
+https://contoso.sharepoint.com/sites/sales,Sales Hub,STS,sales@contoso.com,Active,3,2,0,1,0,0,8,1,12,6,180,512.25,2026-05-20 14:25:00,
+https://contoso.sharepoint.com/sites/hr,HR Hub,STS,hr@contoso.com,Active,4,2,1,0,1,0,10,3,18,10,320,768.75,2026-05-20 14:20:00,
+https://contoso.sharepoint.com/sites/finance,Finance Hub,STS,finance@contoso.com,Active,6,4,0,1,0,0,15,2,20,12,450,2048.00,2026-05-20 14:15:00,
+https://contoso.sharepoint.com/sites/operations,Operations Hub,STS,operations@contoso.com,Active,2,1,0,0,0,0,6,1,8,4,90,256.50,2026-05-20 14:10:00,
+https://contoso.sharepoint.com/sites/it-shared,IT Shared,STS,itadmin@contoso.com,Active,8,5,2,1,1,1,20,4,25,15,600,3072.25,2026-05-20 14:05:00,
+https://contoso.sharepoint.com/sites/corporate,Corporate,SITEPAGEPUBLISHING,corporate@contoso.com,Active,1,1,0,0,0,0,25,1,50,8,150,512.00,2026-05-20 14:00:00,
