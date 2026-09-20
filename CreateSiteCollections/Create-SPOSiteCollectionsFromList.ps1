@@ -3,28 +3,46 @@
     Creates SharePoint Online Site Collections based on list data and configures hub site architecture.
 
 .DESCRIPTION
-    This script automates the creation of SharePoint Online Site Collections from a CSV/Excel list.
-    It supports creating site collections and optionally registering them as hub sites or associating
-    them with existing hub sites based on list data points.
+    Automates creation of SharePoint Online site collections from a CSV file.
+    Supports hub registration and association. Uses PnP.PowerShell with your own Entra ID app.
 
 .PARAMETER ListPath
     Path to the CSV file containing site collection details.
-    Required columns: SiteTitle, SiteUrl, IsHub, HubAssociation, Owner, Description
+    Columns: SiteTitle, SiteUrl, IsHub, HubAssociation, Owner, Description, Template (optional)
 
 .PARAMETER TenantAdminUrl
-    The SharePoint Tenant Admin URL (e.g., https://contoso-admin.sharepoint.com)
+    SharePoint Tenant Admin URL (e.g., https://contoso-admin.sharepoint.com)
+
+.PARAMETER ClientId
+    Entra ID application (client) ID used with Connect-PnPOnline. Required for current PnP.PowerShell.
+
+.PARAMETER TenantId
+    Directory (tenant) ID. Required for certificate-based app-only auth.
+
+.PARAMETER CertificatePath
+    Path to a .pfx certificate for app-only authentication. If omitted, interactive login is used.
+
+.PARAMETER CertificatePassword
+    SecureString password for the certificate file (if the PFX is protected).
+
+.PARAMETER DefaultTemplate
+    Fallback site template when CSV Template is empty. Default: STS#3
+
+.PARAMETER ProvisioningTimeoutSeconds
+    Max seconds to wait for a new site to become available. Default: 300
 
 .PARAMETER CsvHeaders
-    Custom CSV headers if different from default. Default: SiteTitle,SiteUrl,IsHub,HubAssociation,Owner,Description
+    Optional override of expected header names (advanced).
 
 .EXAMPLE
-    .\Create-SPOSiteCollectionsFromList.ps1 -ListPath "C:\SiteCollections.csv" -TenantAdminUrl "https://contoso-admin.sharepoint.com"
+    .\Create-SPOSiteCollectionsFromList.ps1 -ListPath ".\Sample-SiteCollections.csv" `
+      -TenantAdminUrl "https://contoso-admin.sharepoint.com" -ClientId "00000000-0000-0000-0000-000000000000"
 
 .NOTES
     Prerequisites:
-    - PnP.PowerShell module installed
-    - Appropriate permissions to create site collections and manage hub sites
-    - CSV file with required columns
+    - PowerShell 7.4+ recommended for PnP.PowerShell 3.x
+    - Entra ID app registration with appropriate SharePoint permissions
+    - SharePoint Admin or equivalent app permissions
 #>
 
 param(
@@ -36,76 +54,100 @@ param(
     [ValidateScript({ $_ -match '^https:\/\/.+-admin\.sharepoint\.com$' })]
     [string]$TenantAdminUrl,
 
-    [Parameter(Mandatory = $false)]
-    [array]$CsvHeaders = @("SiteTitle", "SiteUrl", "IsHub", "HubAssociation", "Owner", "Description")
-)
+    [Parameter(Mandatory = $true, HelpMessage = "Entra ID application (client) ID")]
+    [string]$ClientId,
 
-# ============================================================================
-# Configuration
-# ============================================================================
+    [Parameter(Mandatory = $false)]
+    [string]$TenantId,
+
+    [Parameter(Mandatory = $false)]
+    [ValidateScript({ if ($_) { Test-Path $_ -PathType Leaf } else { $true } })]
+    [string]$CertificatePath,
+
+    [Parameter(Mandatory = $false)]
+    [SecureString]$CertificatePassword,
+
+    [Parameter(Mandatory = $false)]
+    [string]$DefaultTemplate = "STS#3",
+
+    [Parameter(Mandatory = $false)]
+    [ValidateRange(30, 1800)]
+    [int]$ProvisioningTimeoutSeconds = 300,
+
+    [Parameter(Mandatory = $false)]
+    [array]$CsvHeaders = @("SiteTitle", "SiteUrl", "IsHub", "HubAssociation", "Owner", "Description", "Template")
+)
 
 $ErrorActionPreference = "Stop"
 $VerbosePreference = "Continue"
 
-# Log file configuration
-$LogFolder = "$PSScriptRoot\Logs"
-$LogFile = "$LogFolder\SPO-SiteCreation-$(Get-Date -Format 'yyyy-MM-dd-HHmmss').log"
+$LogFolder = Join-Path -Path $PSScriptRoot -ChildPath "Logs"
+$LogFile = Join-Path -Path $LogFolder -ChildPath ("SPO-SiteCreation-{0}.log" -f (Get-Date -Format "yyyy-MM-dd-HHmmss"))
 
 if (-not (Test-Path $LogFolder)) {
     New-Item -ItemType Directory -Path $LogFolder -Force | Out-Null
 }
 
-# ============================================================================
-# Functions
-# ============================================================================
-
-<#
-.SYNOPSIS
-    Write log messages to both console and log file
-#>
 function Write-Log {
     param(
         [string]$Message,
         [ValidateSet("Info", "Warning", "Error", "Success")]
         [string]$Level = "Info"
     )
-    
+
     $Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $LogMessage = "[$Timestamp] [$Level] $Message"
-    
+
     switch ($Level) {
         "Info" { Write-Host $LogMessage -ForegroundColor Cyan }
         "Warning" { Write-Host $LogMessage -ForegroundColor Yellow }
         "Error" { Write-Host $LogMessage -ForegroundColor Red }
         "Success" { Write-Host $LogMessage -ForegroundColor Green }
     }
-    
+
     Add-Content -Path $LogFile -Value $LogMessage
 }
 
-<#
-.SYNOPSIS
-    Connect to SharePoint Online Tenant Admin
-#>
 function Connect-SPOTenant {
     param(
-        [string]$TenantAdminUrl
+        [string]$TenantAdminUrl,
+        [string]$ClientId,
+        [string]$TenantId,
+        [string]$CertificatePath,
+        [SecureString]$CertificatePassword
     )
-    
+
     try {
         Write-Log "Connecting to SharePoint Tenant: $TenantAdminUrl" "Info"
-        
-        # Check if already connected
+
         $currentConnection = Get-PnPConnection -ErrorAction SilentlyContinue
-        
-        if ($currentConnection) {
-            Write-Log "Already connected to SharePoint Online" "Info"
+        if ($currentConnection -and $currentConnection.Url -like "$TenantAdminUrl*") {
+            Write-Log "Already connected to SharePoint Online ($($currentConnection.Url))" "Info"
             return $true
         }
-        
-        # Connect to tenant admin
-        Connect-PnPOnline -Url $TenantAdminUrl -Interactive
-        
+
+        if ($CertificatePath) {
+            if ([string]::IsNullOrWhiteSpace($TenantId)) {
+                throw "TenantId is required when using CertificatePath for app-only authentication."
+            }
+
+            Write-Log "Using certificate-based app-only authentication" "Info"
+            $connectParams = @{
+                Url            = $TenantAdminUrl
+                ClientId       = $ClientId
+                Tenant         = $TenantId
+                CertificatePath = $CertificatePath
+            }
+            if ($CertificatePassword) {
+                $connectParams["CertificatePassword"] = $CertificatePassword
+            }
+            Connect-PnPOnline @connectParams
+        }
+        else {
+            Write-Log "Using interactive authentication with ClientId $ClientId" "Info"
+            Connect-PnPOnline -Url $TenantAdminUrl -ClientId $ClientId -Interactive
+        }
+
         Write-Log "Successfully connected to SharePoint Tenant Admin" "Success"
         return $true
     }
@@ -115,39 +157,32 @@ function Connect-SPOTenant {
     }
 }
 
-<#
-.SYNOPSIS
-    Read and validate CSV data
-#>
 function Import-SiteCollectionData {
-    param(
-        [string]$ListPath
-    )
-    
+    param([string]$ListPath)
+
     try {
         Write-Log "Reading CSV file from: $ListPath" "Info"
-        
-        $csvData = @()
+
+        $csvData = [System.Collections.Generic.List[object]]::new()
         $rowNumber = 0
-        
-        Get-Content $ListPath | ConvertFrom-Csv | ForEach-Object {
+
+        Import-Csv -Path $ListPath | ForEach-Object {
             $rowNumber++
-            
-            # Validate required fields
+
             if ([string]::IsNullOrWhiteSpace($_.SiteTitle)) {
                 Write-Log "Row $rowNumber: SiteTitle is empty - skipping" "Warning"
                 return
             }
-            
+
             if ([string]::IsNullOrWhiteSpace($_.SiteUrl)) {
                 Write-Log "Row $rowNumber: SiteUrl is empty - skipping" "Warning"
                 return
             }
-            
-            $csvData += $_
+
+            $csvData.Add($_)
         }
-        
-        Write-Log "Successfully imported $($csvData.Count) site collections" "Success"
+
+        Write-Log "Successfully imported $($csvData.Count) site collection row(s)" "Success"
         return $csvData
     }
     catch {
@@ -156,40 +191,121 @@ function Import-SiteCollectionData {
     }
 }
 
-<#
-.SYNOPSIS
-    Create SharePoint Online Site Collection
-#>
+function Test-TenantSiteExists {
+    param([string]$SiteUrl)
+
+    try {
+        $site = Get-PnPTenantSite -Url $SiteUrl -ErrorAction Stop
+        return ($null -ne $site)
+    }
+    catch {
+        return $false
+    }
+}
+
+function Wait-ForTenantSite {
+    param(
+        [string]$SiteUrl,
+        [int]$TimeoutSeconds = 300,
+        [int]$PollSeconds = 15
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    Write-Log "Waiting for site provisioning (timeout ${TimeoutSeconds}s): $SiteUrl" "Info"
+
+    while ((Get-Date) -lt $deadline) {
+        if (Test-TenantSiteExists -SiteUrl $SiteUrl) {
+            try {
+                $site = Get-PnPTenantSite -Url $SiteUrl -ErrorAction Stop
+                # Status can vary; presence + non-failed is enough for association steps
+                if ($site.Status -and $site.Status -match "Failed|Recycled") {
+                    Write-Log "Site reported status '$($site.Status)'" "Warning"
+                }
+                Write-Log "Site is available: $SiteUrl" "Success"
+                return $true
+            }
+            catch {
+                # keep polling
+            }
+        }
+        Start-Sleep -Seconds $PollSeconds
+    }
+
+    Write-Log "Timed out waiting for site: $SiteUrl" "Warning"
+    return $false
+}
+
 function New-SPOSiteCollection {
     param(
         [string]$SiteTitle,
         [string]$SiteUrl,
         [string]$Owner,
-        [string]$Description
+        [string]$Description,
+        [string]$Template,
+        [int]$ProvisioningTimeoutSeconds
     )
-    
+
     try {
-        Write-Log "Creating site collection: $SiteTitle ($SiteUrl)" "Info"
-        
-        # Verify site doesn't already exist
-        try {
-            Get-PnPTenantSite -Url $SiteUrl -ErrorAction SilentlyContinue | Out-Null
+        Write-Log "Creating site collection: $SiteTitle ($SiteUrl) [Template=$Template]" "Info"
+
+        if (Test-TenantSiteExists -SiteUrl $SiteUrl) {
             Write-Log "Site already exists: $SiteUrl - skipping creation" "Warning"
             return $SiteUrl
         }
-        catch {
-            # Site doesn't exist, proceed with creation
+
+        $newParams = @{
+            Title    = $SiteTitle
+            Url      = $SiteUrl
+            Owner    = $Owner
+            Template = $Template
+            Wait     = $true
         }
-        
-        # Create new site
-        $newSite = New-PnPTenantSite -Title $SiteTitle -Url $SiteUrl -Owner $Owner -Template "STS#3"
-        
+
+        # Wait switch availability differs by PnP version; fall back if unsupported
+        try {
+            New-PnPTenantSite @newParams | Out-Null
+        }
+        catch {
+            if ($_.Exception.Message -match "Wait|parameter") {
+                $newParams.Remove("Wait")
+                New-PnPTenantSite @newParams | Out-Null
+                Wait-ForTenantSite -SiteUrl $SiteUrl -TimeoutSeconds $ProvisioningTimeoutSeconds | Out-Null
+            }
+            else {
+                throw
+            }
+        }
+
+        if (-not (Test-TenantSiteExists -SiteUrl $SiteUrl)) {
+            Wait-ForTenantSite -SiteUrl $SiteUrl -TimeoutSeconds $ProvisioningTimeoutSeconds | Out-Null
+        }
+
         Write-Log "Successfully created site collection: $SiteTitle" "Success"
-        
-        # Wait for site to be provisioned
-        Write-Log "Waiting for site to be provisioned..." "Info"
-        Start-Sleep -Seconds 30
-        
+
+        if (-not [string]::IsNullOrWhiteSpace($Description)) {
+            try {
+                Connect-PnPOnline -Url $SiteUrl -ClientId $script:ClientId -Interactive -ErrorAction Stop
+                Set-PnPWeb -Description $Description -ErrorAction Stop
+                Connect-SPOTenant -TenantAdminUrl $script:TenantAdminUrl -ClientId $script:ClientId `
+                    -TenantId $script:TenantId -CertificatePath $script:CertificatePath `
+                    -CertificatePassword $script:CertificatePassword | Out-Null
+                Write-Log "Applied web description for $SiteUrl" "Info"
+            }
+            catch {
+                Write-Log "Could not set Description on web (site still created): $($_.Exception.Message)" "Warning"
+                # Reconnect to admin for subsequent operations
+                try {
+                    Connect-SPOTenant -TenantAdminUrl $script:TenantAdminUrl -ClientId $script:ClientId `
+                        -TenantId $script:TenantId -CertificatePath $script:CertificatePath `
+                        -CertificatePassword $script:CertificatePassword | Out-Null
+                }
+                catch {
+                    Write-Log "Failed to restore admin connection: $($_.Exception.Message)" "Error"
+                    throw
+                }
+            }
+        }
+
         return $SiteUrl
     }
     catch {
@@ -198,30 +314,24 @@ function New-SPOSiteCollection {
     }
 }
 
-<#
-.SYNOPSIS
-    Register a site as a hub site
-#>
 function Register-HubSite {
     param(
         [string]$SiteUrl,
         [string]$HubTitle
     )
-    
+
     try {
         Write-Log "Registering hub site: $SiteUrl (Title: $HubTitle)" "Info"
-        
-        # Check if already a hub site
+
         $hubSite = Get-PnPHubSite -ErrorAction SilentlyContinue | Where-Object { $_.SiteUrl -eq $SiteUrl }
-        
+
         if ($hubSite) {
             Write-Log "Site is already registered as hub site: $SiteUrl" "Warning"
-            return $hubSite.ID
+            return $hubSite.Id
         }
-        
-        # Register as hub site
+
         $hubId = Register-PnPHubSite -Site $SiteUrl -HubSiteTitle $HubTitle
-        
+
         Write-Log "Successfully registered hub site: $SiteUrl (Hub ID: $hubId)" "Success"
         return $hubId
     }
@@ -231,30 +341,24 @@ function Register-HubSite {
     }
 }
 
-<#
-.SYNOPSIS
-    Associate a site with a hub site
-#>
 function Add-SiteToHub {
     param(
         [string]$SiteUrl,
         [string]$HubUrl
     )
-    
+
     try {
         Write-Log "Associating site $SiteUrl with hub $HubUrl" "Info"
-        
-        # Get hub site ID
+
         $hubSite = Get-PnPHubSite | Where-Object { $_.SiteUrl -eq $HubUrl }
-        
+
         if (-not $hubSite) {
             Write-Log "Hub site not found: $HubUrl" "Error"
             throw "Hub site not found: $HubUrl"
         }
-        
-        # Associate the site with hub
-        Add-PnPHubSiteAssociation -Site $SiteUrl -HubSite $hubSite.ID
-        
+
+        Add-PnPHubSiteAssociation -Site $SiteUrl -HubSite $hubSite.Id
+
         Write-Log "Successfully associated site with hub" "Success"
     }
     catch {
@@ -263,62 +367,56 @@ function Add-SiteToHub {
     }
 }
 
-<#
-.SYNOPSIS
-    Validate site URL format
-#>
 function Test-SiteUrlFormat {
-    param(
-        [string]$SiteUrl
-    )
-    
-    # Expected format: https://tenant.sharepoint.com/sites/sitename
+    param([string]$SiteUrl)
+
     $urlPattern = '^https:\/\/[a-z0-9-]+\.sharepoint\.com\/sites\/[a-z0-9-]+$'
-    
+
     if ($SiteUrl -match $urlPattern) {
         return $true
     }
-    
-    Write-Log "Invalid site URL format: $SiteUrl. Expected format: https://tenant.sharepoint.com/sites/sitename" "Error"
+
+    Write-Log "Invalid site URL format: $SiteUrl. Expected: https://tenant.sharepoint.com/sites/sitename" "Error"
     return $false
 }
 
-<#
-.SYNOPSIS
-    Process all site collections from the list
-#>
 function Invoke-SiteCollectionCreation {
     param(
-        [array]$SiteData
+        [System.Collections.IEnumerable]$SiteData,
+        [string]$DefaultTemplate,
+        [int]$ProvisioningTimeoutSeconds
     )
-    
+
     $successCount = 0
     $failureCount = 0
     $hubSites = @{}
-    
+
     Write-Log "======================================================" "Info"
     Write-Log "Starting Site Collection Creation Process" "Info"
     Write-Log "======================================================" "Info"
-    
-    # First pass: Create all sites and register hub sites
+
     foreach ($site in $SiteData) {
         try {
             $siteTitle = $site.SiteTitle.Trim()
             $siteUrl = $site.SiteUrl.Trim()
-            $isHub = [bool]::Parse($site.IsHub)
+            $isHub = [bool]::Parse(($site.IsHub.ToString().Trim()))
             $owner = $site.Owner.Trim()
-            $description = $site.Description.Trim()
-            
-            # Validate URL format
+            $description = if ($site.Description) { $site.Description.Trim() } else { "" }
+            $template = if ($site.PSObject.Properties.Name -contains "Template" -and -not [string]::IsNullOrWhiteSpace($site.Template)) {
+                $site.Template.Trim()
+            }
+            else {
+                $DefaultTemplate
+            }
+
             if (-not (Test-SiteUrlFormat -SiteUrl $siteUrl)) {
                 $failureCount++
                 continue
             }
-            
-            # Create site collection
-            $createdSiteUrl = New-SPOSiteCollection -SiteTitle $siteTitle -SiteUrl $siteUrl -Owner $owner -Description $description
-            
-            # Register as hub site if required
+
+            $createdSiteUrl = New-SPOSiteCollection -SiteTitle $siteTitle -SiteUrl $siteUrl -Owner $owner `
+                -Description $description -Template $template -ProvisioningTimeoutSeconds $ProvisioningTimeoutSeconds
+
             if ($isHub) {
                 $hubId = Register-HubSite -SiteUrl $createdSiteUrl -HubTitle $siteTitle
                 $hubSites[$createdSiteUrl] = @{
@@ -326,7 +424,7 @@ function Invoke-SiteCollectionCreation {
                     Id    = $hubId
                 }
             }
-            
+
             $successCount++
         }
         catch {
@@ -334,76 +432,77 @@ function Invoke-SiteCollectionCreation {
             Write-Log "Exception processing site: $($_.Exception.Message)" "Error"
         }
     }
-    
-    # Second pass: Associate non-hub sites with their hub sites
+
     Write-Log "======================================================" "Info"
     Write-Log "Starting Hub Site Association Process" "Info"
     Write-Log "======================================================" "Info"
-    
+
     foreach ($site in $SiteData) {
         try {
             $siteUrl = $site.SiteUrl.Trim()
-            $isHub = [bool]::Parse($site.IsHub)
-            $hubAssociation = $site.HubAssociation.Trim()
-            
-            # Skip if this is a hub site or no hub association specified
+            $isHub = [bool]::Parse(($site.IsHub.ToString().Trim()))
+            $hubAssociation = if ($site.HubAssociation) { $site.HubAssociation.Trim() } else { "" }
+
             if ($isHub -or [string]::IsNullOrWhiteSpace($hubAssociation)) {
                 continue
             }
-            
-            # Validate URL format
+
             if (-not (Test-SiteUrlFormat -SiteUrl $siteUrl)) {
                 continue
             }
-            
-            # Associate with hub site
+
             Add-SiteToHub -SiteUrl $siteUrl -HubUrl $hubAssociation
         }
         catch {
             Write-Log "Exception associating site with hub: $($_.Exception.Message)" "Error"
         }
     }
-    
-    # Summary
+
     Write-Log "======================================================" "Info"
     Write-Log "Site Collection Creation Summary" "Info"
     Write-Log "======================================================" "Info"
-    Write-Log "Total Sites Processed: $($SiteData.Count)" "Info"
+    Write-Log "Total Rows: $(($SiteData | Measure-Object).Count)" "Info"
     Write-Log "Successful: $successCount" "Success"
     Write-Log "Failed: $failureCount" "Error"
-    Write-Log "Hub Sites Created: $($hubSites.Count)" "Info"
+    Write-Log "Hub Sites Registered (this run): $($hubSites.Count)" "Info"
 }
 
-# ============================================================================
-# Main Execution
-# ============================================================================
+# Script-scoped connection settings for reconnect after site-scoped operations
+$script:ClientId = $ClientId
+$script:TenantAdminUrl = $TenantAdminUrl
+$script:TenantId = $TenantId
+$script:CertificatePath = $CertificatePath
+$script:CertificatePassword = $CertificatePassword
 
 try {
     Write-Log "Script execution started" "Info"
-    
-    # Import PnP.PowerShell module
+
     Write-Log "Loading PnP.PowerShell module..." "Info"
     if (-not (Get-Module -ListAvailable -Name "PnP.PowerShell")) {
-        Write-Log "Installing PnP.PowerShell module..." "Info"
+        Write-Log "Installing PnP.PowerShell module (CurrentUser scope)..." "Info"
         Install-Module -Name "PnP.PowerShell" -Force -Scope CurrentUser
     }
-    
+
     Import-Module -Name "PnP.PowerShell" -Force
-    
-    # Connect to SharePoint
-    Connect-SPOTenant -TenantAdminUrl $TenantAdminUrl
-    
-    # Import site data
+
+    $pnpMod = Get-Module -Name "PnP.PowerShell"
+    if ($pnpMod) {
+        Write-Log "Using PnP.PowerShell version $($pnpMod.Version)" "Info"
+    }
+
+    Connect-SPOTenant -TenantAdminUrl $TenantAdminUrl -ClientId $ClientId -TenantId $TenantId `
+        -CertificatePath $CertificatePath -CertificatePassword $CertificatePassword
+
     $siteCollections = Import-SiteCollectionData -ListPath $ListPath
-    
+
     if ($siteCollections.Count -eq 0) {
         Write-Log "No valid site collections found in CSV file" "Warning"
         exit 0
     }
-    
-    # Process site collections
-    Invoke-SiteCollectionCreation -SiteData $siteCollections
-    
+
+    Invoke-SiteCollectionCreation -SiteData $siteCollections -DefaultTemplate $DefaultTemplate `
+        -ProvisioningTimeoutSeconds $ProvisioningTimeoutSeconds
+
     Write-Log "Script execution completed successfully" "Success"
 }
 catch {
