@@ -108,6 +108,29 @@ function Write-Log {
     Add-Content -Path $LogFile -Value $LogMessage
 }
 
+function Connect-PnPWithConfiguredAuth {
+    param([string]$Url)
+
+    if ($script:CertificatePath) {
+        if ([string]::IsNullOrWhiteSpace($script:TenantId)) {
+            throw "TenantId is required when using CertificatePath for app-only authentication."
+        }
+        $connectParams = @{
+            Url             = $Url
+            ClientId        = $script:ClientId
+            Tenant          = $script:TenantId
+            CertificatePath = $script:CertificatePath
+        }
+        if ($script:CertificatePassword) {
+            $connectParams["CertificatePassword"] = $script:CertificatePassword
+        }
+        Connect-PnPOnline @connectParams
+    }
+    else {
+        Connect-PnPOnline -Url $Url -ClientId $script:ClientId -Interactive
+    }
+}
+
 function Connect-SPOTenant {
     param(
         [string]$TenantAdminUrl,
@@ -126,27 +149,12 @@ function Connect-SPOTenant {
             return $true
         }
 
-        if ($CertificatePath) {
-            if ([string]::IsNullOrWhiteSpace($TenantId)) {
-                throw "TenantId is required when using CertificatePath for app-only authentication."
-            }
+        $script:ClientId = $ClientId
+        $script:TenantId = $TenantId
+        $script:CertificatePath = $CertificatePath
+        $script:CertificatePassword = $CertificatePassword
 
-            Write-Log "Using certificate-based app-only authentication" "Info"
-            $connectParams = @{
-                Url            = $TenantAdminUrl
-                ClientId       = $ClientId
-                Tenant         = $TenantId
-                CertificatePath = $CertificatePath
-            }
-            if ($CertificatePassword) {
-                $connectParams["CertificatePassword"] = $CertificatePassword
-            }
-            Connect-PnPOnline @connectParams
-        }
-        else {
-            Write-Log "Using interactive authentication with ClientId $ClientId" "Info"
-            Connect-PnPOnline -Url $TenantAdminUrl -ClientId $ClientId -Interactive
-        }
+        Connect-PnPWithConfiguredAuth -Url $TenantAdminUrl
 
         Write-Log "Successfully connected to SharePoint Tenant Admin" "Success"
         return $true
@@ -217,7 +225,6 @@ function Wait-ForTenantSite {
         if (Test-TenantSiteExists -SiteUrl $SiteUrl) {
             try {
                 $site = Get-PnPTenantSite -Url $SiteUrl -ErrorAction Stop
-                # Status can vary; presence + non-failed is enough for association steps
                 if ($site.Status -and $site.Status -match "Failed|Recycled") {
                     Write-Log "Site reported status '$($site.Status)'" "Warning"
                 }
@@ -261,7 +268,6 @@ function New-SPOSiteCollection {
             Wait     = $true
         }
 
-        # Wait switch availability differs by PnP version; fall back if unsupported
         try {
             New-PnPTenantSite @newParams | Out-Null
         }
@@ -284,20 +290,15 @@ function New-SPOSiteCollection {
 
         if (-not [string]::IsNullOrWhiteSpace($Description)) {
             try {
-                Connect-PnPOnline -Url $SiteUrl -ClientId $script:ClientId -Interactive -ErrorAction Stop
+                Connect-PnPWithConfiguredAuth -Url $SiteUrl
                 Set-PnPWeb -Description $Description -ErrorAction Stop
-                Connect-SPOTenant -TenantAdminUrl $script:TenantAdminUrl -ClientId $script:ClientId `
-                    -TenantId $script:TenantId -CertificatePath $script:CertificatePath `
-                    -CertificatePassword $script:CertificatePassword | Out-Null
+                Connect-PnPWithConfiguredAuth -Url $script:TenantAdminUrl
                 Write-Log "Applied web description for $SiteUrl" "Info"
             }
             catch {
                 Write-Log "Could not set Description on web (site still created): $($_.Exception.Message)" "Warning"
-                # Reconnect to admin for subsequent operations
                 try {
-                    Connect-SPOTenant -TenantAdminUrl $script:TenantAdminUrl -ClientId $script:ClientId `
-                        -TenantId $script:TenantId -CertificatePath $script:CertificatePath `
-                        -CertificatePassword $script:CertificatePassword | Out-Null
+                    Connect-PnPWithConfiguredAuth -Url $script:TenantAdminUrl
                 }
                 catch {
                     Write-Log "Failed to restore admin connection: $($_.Exception.Message)" "Error"
@@ -467,7 +468,6 @@ function Invoke-SiteCollectionCreation {
     Write-Log "Hub Sites Registered (this run): $($hubSites.Count)" "Info"
 }
 
-# Script-scoped connection settings for reconnect after site-scoped operations
 $script:ClientId = $ClientId
 $script:TenantAdminUrl = $TenantAdminUrl
 $script:TenantId = $TenantId
