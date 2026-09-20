@@ -1,0 +1,39 @@
+# Logs and local runtime output
+Logs/
+**/Logs/
+*.log
+
+# Local inventory / report exports (keep *Sample* files tracked)
+SiteCollectionInventory_*.csv
+**/SiteCollectionInventory_*.csv
+!**/Sample*.csv
+!**/Sample-*.csv
+
+# Secrets and credentials — never commit
+*.pfx
+*.pem
+*.key
+*.p12
+appsettings*.json
+secrets.json
+**/local.settings.json
+.env
+.env.*
+!.env.example
+
+# PowerShell / editor
+*.ps1xml.bak
+.vs/
+.vscode/*
+!.vscode/extensions.json
+*.user
+
+# OS junk
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Temp
+*.tmp
+*.temp
+~$*
